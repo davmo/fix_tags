@@ -1,0 +1,856 @@
+#!/usr/bin/perl
+#===============================================================================
+#
+#         FILE: fix_tags
+#
+#        USAGE: ./fix_tags [-help] [-album=ALBUMSTRING] [-artist=ARTISTSTRING]
+#               [-comment=COMMENTSTRING] [-genre=GENRESTRING]
+#               [-title=TITLESTRING] [-track=TRACKNUMBER] [-year=YEAR]
+#               [-filter TAGNAME=FILTERNAME] [-[no]format] [-width=N]
+#               [-edit=TAGNAME] audio_file ...
+#
+#  DESCRIPTION: A tool for reporting and altering tags in audio files of
+#               a variety of formats
+#
+#      OPTIONS: ---
+# REQUIREMENTS: ---
+#         BUGS: ---
+#        NOTES: ---
+#       AUTHOR: Dave Morriss (djm), Dave.Morriss@gmail.com
+#      LICENCE: Copyright (c) year 2011, 2012, 2013, 2014, 2015, Dave Morriss
+#      VERSION: 1.3.7
+#      CREATED: 2011-12-12 22:00:34
+#     REVISION: 2015-03-23 13:56:32
+#
+#===============================================================================
+
+use Modern::Perl '2011';
+
+use Getopt::Long;
+use Pod::Usage;
+
+use Data::Dumper;
+
+use File::stat;
+use File::Temp;
+use File::Slurp;
+use Date::Manip::Delta;
+use Date::Manip::TZ;
+use Audio::TagLib;
+
+use TryCatch;
+
+use HTML::Restrict;
+
+#
+# Version number (manually incremented)
+#
+our $VERSION = '1.3.7';
+
+#
+# Script name
+#
+( my $PROG = $0 ) =~ s|.*/||mx;
+
+#
+# Declarations
+#
+my ( $sb, $fyear, $ref, $tag, $aprop, $changed );
+my ( %tags, @errors );
+
+#
+# Display of tags. Controlled by left margin width ($lmwidth) for the tag
+# name, followed by a colon and a space. The right margin starts in column
+# $lmwidth+2 ($rmpos).
+#
+my $lmwidth = 10;
+my $rmpos   = $lmwidth + 2;
+my $fmt1    = "%-${lmwidth}s:";
+my $fmt2    = "%-${lmwidth}s: %s\n";
+my $threshold;
+
+#
+# The Audio::TagLib methods to call for each tag manipulated by the script.
+# The number after the method name is 1 if the value being set is a string,
+# and zero otherwise.
+#
+my %tagmethods = (
+    album   => [ 'setAlbum',   1 ],
+    artist  => [ 'setArtist',  1 ],
+    comment => [ 'setComment', 1 ],
+    genre   => [ 'setGenre',   1 ],
+    title   => [ 'setTitle',   1 ],
+    track   => [ 'setTrack',   0 ],
+    year    => [ 'setYear',    0 ],
+);
+
+#
+# Internal routines to invoke to perform filtering tasks
+#
+my %filtermethods = (
+    clean      => \&clean_string,
+    underscore => \&replace_underscores,
+    HTML       => \&remove_HTML,
+);
+
+#
+# Settings to show whether a tag can be edited with an editor
+#
+my %editable = (
+    album   => 0,
+    artist  => 0,
+    comment => 1,
+    genre   => 0,
+    title   => 1,
+    track   => 0,
+    year    => 0,
+);
+
+#
+# Ensure STDOUT and STDERR are in UTF8 mode
+#
+binmode( STDOUT, ":encoding(utf8)" );
+binmode( STDERR, ":encoding(utf8)" );
+
+#-------------------------------------------------------------------------------
+# Options and arguments
+#-------------------------------------------------------------------------------
+my $DEFWIDTH = 80;
+my $MINWIDTH = 60;
+
+my ( %options, %filter );
+Options( \%options, \%filter );
+
+#
+# Default help
+#
+pod2usage( -msg => "Version $VERSION\n", -exitval => 1 )
+    if ( $options{'help'} );
+
+#
+# Collect options
+#
+my $album   = $options{album};
+my $artist  = $options{artist};
+my $comment = $options{comment};
+my $genre   = $options{genre};
+my $title   = $options{title};
+my $track   = $options{track};
+my $year    = $options{year};
+
+my $format = ( defined( $options{format} ) ? $options{format} : 0 );
+my $width  = ( defined( $options{width} )  ? $options{width}  : $DEFWIDTH );
+
+my $edit = $options{edit};
+
+#
+# Limit the minimum width
+#
+$width = $MINWIDTH if ( $width < $MINWIDTH );
+
+#
+# Check the filter options
+#
+unless ( check_filters( \%filter, \@errors ) ) {
+    print STDERR join( "\n", @errors ), "\n";
+    exit(1);
+}
+
+#
+# Check the tag is known and can be edited
+#
+if ( defined($edit) ) {
+    $edit = lc($edit);
+    die "Unknown tag $edit\n" unless (exists($editable{$edit}));
+    unless ($editable{$edit}) {
+        warn "Tag $edit cannot be edited\n";
+        undef($edit);
+    }
+}
+
+my @files = @ARGV;
+
+pod2usage(
+    -msg     => "Missing arguments\n\nVersion $VERSION\n",
+    -exitval => 1
+) unless @files;
+
+#-------------------------------------------------------------------------------
+#  Main Loop
+#-------------------------------------------------------------------------------
+foreach my $file (@files) {
+    unless ( -e $file ) {
+        warn "$file does not exist\n";
+        next;
+    }
+
+    #
+    # Report the file name
+    #
+    print "$file\n";
+
+    #
+    # If the file is empty report it and skip it
+    #
+    if ( -z $file ) {
+        warn "File $file is empty\n";
+        next;
+    }
+
+    $sb    = stat($file);
+    $fyear = ( localtime( $sb->mtime ) )[5] + 1900;
+
+    #
+    # Catch errors if someone tries to use this tool on a file that
+    # Audio::TagLib doesn't know about
+    #
+    try {
+        $ref   = Audio::TagLib::FileRef->new($file);
+        $tag   = $ref->tag();
+        $aprop = $ref->audioProperties();
+
+        %tags = (
+            title   => $tag->title()->toCString(),
+            artist  => $tag->artist()->toCString(),
+            album   => $tag->album()->toCString(),
+            comment => $tag->comment()->toCString(),
+            genre   => $tag->genre()->toCString(),
+            year    => $tag->year(),
+            track   => $tag->track(),
+            length  => sprintf( "%s (%d sec)",
+                interval( $aprop->length() ),
+                $aprop->length() ),
+        );
+    }
+
+    #
+    # We choked on something nasty
+    #
+    catch {
+        warn "File $file apparently does not contain tags\n";
+        next;
+    }
+
+    #
+    # Report current tags. Use formatting if requested and it's warranted
+    #
+    $threshold = $width - $rmpos;
+    for my $key ( sort( keys(%tags) ) ) {
+        if ( $format && length( $tags{$key} ) > $threshold ) {
+            print textFormat( $tags{$key}, sprintf( $fmt1, $key ),
+                'R', $rmpos, $width ),
+                "\n";
+        }
+        else {
+            printf $fmt2, $key, $tags{$key};
+        }
+    }
+
+    $changed = 0;
+
+    #
+    # Change album, artist name, comment, genre, track number or year if
+    # requested
+    #
+    $changed += changeTag( $tag, 'album',  \%tags, $album,  'setAlbum',  1 );
+    $changed += changeTag( $tag, 'artist', \%tags, $artist, 'setArtist', 1 );
+    $changed
+        += changeTag( $tag, 'comment', \%tags, $comment, 'setComment', 1 );
+    $changed += changeTag( $tag, 'genre', \%tags, $genre, 'setGenre', 1 );
+    $changed += changeTag( $tag, 'title', \%tags, $title, 'setTitle', 1 );
+    $changed += changeTag( $tag, 'track', \%tags, $track, 'setTrack', 0 );
+    $changed += changeTag( $tag, 'year',  \%tags, $year,  'setYear',  0 );
+
+    #
+    # Do some filtering
+    #
+    $changed += apply_filters( $tag, \%tags, \%tagmethods, \%filter,
+        \%filtermethods );
+
+    #
+    # Perform an edit if requested (one per invocation)
+    #
+    if ( defined($edit) ) {
+        $changed += edit_tag( $tag, $edit, \%tags, \%tagmethods );
+    }
+
+    #
+    # Update if there are changes
+    #
+    if ($changed) {
+        $ref->save();
+    }
+
+}
+continue {
+    print "\n";
+}
+
+exit;
+
+#===  FUNCTION  ================================================================
+#         NAME: changeTag
+#      PURPOSE: Changes a tag to a new value if appropriate
+#   PARAMETERS: $tag            Tag object
+#               $tagname        Name of tag
+#               $tags           Hashref containing the converted tags from the
+#                               current file
+#               $newValue       New value of tag or undefined
+#               $setFunc        String containing the name of the 'set'
+#                               function
+#               $isString       True if the value being set is a string
+#      RETURNS: 1 if a change has been made, 0 otherwise
+#  DESCRIPTION: Checks that $newValue is defined (it can be an empty string)
+#               and that the new value differs from the old one, returning if
+#               not. The $isString value defaults to zero. Ensures that a null
+#               $newValue is replaced by a zero if the tag is numeric. Reports
+#               what change has been requested then makes the change.
+#       THROWS: No exceptions
+#     COMMENTS: None
+#     SEE ALSO:
+#===============================================================================
+sub changeTag {
+    my ( $tag, $tagname, $tags, $newValue, $setFunc, $isString ) = @_;
+
+    my $oldValue = $tags->{$tagname};
+
+    return 0 unless defined($newValue);
+    return 0 if $oldValue eq $newValue;
+
+    $isString = 0 unless defined($isString);
+
+    $newValue = 0 if ( $newValue eq '' && !$isString );
+
+    print "Changing $tagname to '$newValue'\n";
+    $tag->$setFunc(
+        (   $isString
+            ? Audio::TagLib::String->new($newValue)
+            : $newValue
+        )
+    );
+
+    $tags->{$tagname} = $newValue;
+
+    return 1;
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: check_filters
+#      PURPOSE: Check that the filter hash contains valid settings
+#   PARAMETERS: $filter         Hashref containing the filter options
+#               $errors         Arrayref to contain error messages
+#      RETURNS: 1 (true) if all is well, otherwise 0 (false)
+#  DESCRIPTION: The check returns true if there are no filters. It returns
+#               false if there are any unknown tag names or any unknown filter
+#               names.
+#       THROWS: No exceptions
+#     COMMENTS: The knowledge of what is a vlaid tag name or filter name is
+#               within this function, which is not ideal for maintenance.
+#     SEE ALSO: N/A
+#===============================================================================
+sub check_filters {
+    my ( $filters, $errors ) = @_;
+
+    my @filterable_tags = (qw{ album artist comment genre title });
+    my @valid_filters   = (qw{clean underscore html});
+    my @unknown;
+
+    #
+    # Nothing is wrong if there are no filters
+    #
+    return 1 unless defined($filters);
+
+    #
+    # Are any tag names unknown?
+    #
+    my %filterable = map { $_ => 1 } @filterable_tags;
+    @unknown = grep { !defined( $filterable{$_} ) }
+        map { lc($_) } keys( %{$filters} );
+    if (@unknown) {
+        push( @{$errors}, "Error: Invalid filter(s)" )
+            unless defined($errors);
+        push( @{$errors}, "Unknown tag names: " . join( ", ", @unknown ) );
+    }
+
+    #
+    # Are any filter names unknown?
+    #
+    my %valid = map { $_ => 1 } @valid_filters;
+    my @names = map { @{ $filters->{$_} } } keys( %{$filters} );
+    @unknown = grep { !defined( $valid{$_} ) } map { lc($_) } @names;
+    if (@unknown) {
+        push( @{$errors}, "Error: Invalid filter(s)" )
+            unless defined($errors);
+        push( @{$errors}, "Unknown filter names: " . join( ", ", @unknown ) );
+    }
+
+    #
+    # All tests passed if no errors
+    #
+    return scalar( @{$errors} ) == 0;
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: apply_filters
+#      PURPOSE: Looks for requested filters and the tags they are to be
+#               applied to and performs the necessary filtering
+#   PARAMETERS: $tag            Tag object
+#               $tags           Hashref containing the converted tags from the
+#                               current file
+#               $tagmethods     Hashref containing the Audio::TagLib method
+#                               names per tag
+#               $filter         Hashref containing filter options
+#               $filtermethods  Hashref containing filter names and the
+#                               routines that handle them
+#      RETURNS: Number of changes made
+#  DESCRIPTION: The $filter hash contains tag names as keys (lower- or
+#               upper-case). The value is an array of filter names (lower- or
+#               upper-case). We loop through the tag names looking for filter
+#               names and applying the filters we find.
+#       THROWS: No exceptions
+#     COMMENTS: The sorting should be case-insensitive.
+#     SEE ALSO: N/A
+#===============================================================================
+sub apply_filters {
+    my ( $tag, $tags, $tagmethods, $filter, $filtermethods ) = @_;
+
+    my $lc_t;
+    my $newtag;
+    my $changes = 0;
+
+    #
+    # Loop through the tags we are to filter in sorted order
+    #
+    for my $t ( sort( keys( %{$filter} ) ) ) {
+
+        #
+        # We need a lowercase key to access the tag
+        #
+        $lc_t = lc($t);
+
+        #
+        # Loop through all available methods and apply them if requested
+        #
+        for my $f ( sort( keys( %{$filtermethods} ) ) ) {
+            if ( grep( /^$f$/i, @{ $filter->{$t} } ) ) {
+                $newtag = &{ $filtermethods->{$f} }( $tags->{$lc_t} );
+                $changes += changeTag( $tag, $lc_t, $tags,
+                    $newtag, @{ $tagmethods->{$lc_t} } );
+            }
+
+        }
+    }
+
+    return $changes;
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: edit_tag
+#      PURPOSE: Edit a tag in an editor
+#   PARAMETERS: $tag            Tag object
+#               $tagname        Name of tag
+#               $tags           Hashref containing the converted tags from the
+#                               current file
+#               $tagmethods     Hashref containing the Audio::TagLib method
+#                               names per tag
+#      RETURNS: 1 if there has been a change, otherwise 0
+#  DESCRIPTION: For editing very log tags like 'comment'.
+#       THROWS: No exceptions
+#     COMMENTS: None
+#     SEE ALSO: N/A
+#===============================================================================
+sub edit_tag {
+    my ( $tag, $tagname, $tags, $tagmethods ) = @_;
+
+    my $oldValue = $tags->{$tagname};
+    my $newValue;
+    my $changes = 0;
+
+    my $tfh = File::Temp->new;
+    my $tfn = $tfh->filename;
+    print $tfh $oldValue;
+    $tfh->close;
+    die "Edit failed\n"
+        unless ( system( ( 'vim', $tfn ) ) == 0 );
+
+    $newValue = read_file( $tfn, { binmode => ':utf8' } );
+    chomp($newValue);
+
+    $changes += changeTag( $tag, $tagname, $tags,
+        $newValue, @{ $tagmethods->{$tagname} } );
+
+    return $changes;
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: textFormat
+#      PURPOSE: Formats a block of text in an indented, wrapped style with
+#               a label in the left column
+#   PARAMETERS: $text           The text to be formatted, as a scalar string
+#               $tag            The label to be added to the left of the top
+#                               line
+#               $align          Tag alignment, 'L' for left, otherwise right
+#               $lmargin        Width of the left margin (assumed to be big
+#                               enough for the tag)
+#               $textwidth      The width of all of the text plus left margin
+#                               (i.e.  the right margin)
+#      RETURNS: The formatted result as a string
+#  DESCRIPTION: Chops the incoming text into words (thereby removing any
+#               formatting). Removes any leading spaces. Loops through the
+#               wordlist building them into lines of the right length to fit
+#               between the left and right margins. Saves the lines in an
+#               array. Adds the tag to the first line with the alignment
+#               requested then returns the array joined into a string.
+#       THROWS: No exceptions
+#     COMMENTS: Inspired by Text::Format but *much* simpler. In fact T::F is
+#               a nasty thing to have to use; I couldn't get it to do what
+#               this routine does.
+#               TODO Make the routine more resilient to silly input values.
+#     SEE ALSO:
+#===============================================================================
+sub textFormat {
+    my ( $text, $tag, $align, $lmargin, $textwidth ) = @_;
+
+    my ( $width, $word );
+    my ( @words, @buff, @wrap );
+
+    #
+    # Build the tag early. If there's no text we'll just return the tag.
+    #
+    $tag = sprintf( "%*s",
+        ( $align =~ /L/i ? ( $lmargin - 1 ) * -1 : $lmargin - 1 ), $tag );
+
+    return $tag unless $text;
+
+    $text =~ s/(^\s+|\s+$)//g;
+    return $tag unless $text;
+
+    #
+    # Chop up the incoming text removing leading spaces
+    #
+    @words = split( /\s+/, $text );
+    shift(@words) if ( @words && $words[0] eq '' );
+
+    #
+    # Compute the width of the active text
+    #
+    $width = $textwidth - $lmargin;
+
+    #
+    # Format the words into lines with a blank left margin
+    #
+    while ( defined( $word = shift(@words) ) ) {
+        if ( length( join( ' ', @buff, $word ) ) < $width ) {
+            push( @buff, $word );
+        }
+        else {
+            push( @wrap, ' ' x $lmargin . join( ' ', @buff ) );
+            @buff = ($word);
+        }
+    }
+
+    #
+    # Append any remainder
+    #
+    push( @wrap, ' ' x $lmargin . join( ' ', @buff ) ) if @buff;
+
+    #
+    # Insert the tag into the first line
+    #
+    substr( $wrap[0], 0, $lmargin - 1 ) = $tag;
+
+    #
+    # Return the formatted array as a string
+    #
+    return join( "\n", @wrap );
+
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: interval
+#      PURPOSE: Convert a 'MM:SS' string into an acceptable PostgreSQL
+#               interval where the minutes portion may exceed 60.
+#   PARAMETERS:
+#      RETURNS: The interval string in the format 'HH:MM:SS'
+#  DESCRIPTION:
+#       THROWS: No exceptions
+#     COMMENTS: None
+#     SEE ALSO:
+#===============================================================================
+sub interval {
+    my ($time) = @_;
+
+    return undef unless $time;
+
+    my $date = Date::Manip::Delta->new;
+    unless ( $date->parse($time) ) {
+        return $date->printf("%02hv:%02mv:%02sv");
+    }
+    else {
+        warn "Invalid time $time\n";
+        return undef;
+    }
+
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: clean_string
+#      PURPOSE: Clean a string of non-printables, newlines, multiple spaces
+#   PARAMETERS: $str            The string to process
+#      RETURNS: The processed string
+#  DESCRIPTION: Removes leading and trailing spaces. Removes all non-printable
+#               characters. Removes all CR/LF sequences. Replaces multiple
+#               white space characters with a single space.
+#       THROWS: No exceptions
+#     COMMENTS: None
+#     SEE ALSO:
+#===============================================================================
+sub clean_string {
+    my ($str) = @_;
+
+    $str =~ s/(^\s+|\s+$)//g;
+    #$str =~ tr/[[:graph:]]//c; # Documented as not working
+    $str =~ s/[^[:graph:] ]/ /g;
+    $str =~ tr/\x0A\x0D/ /s;
+    $str =~ tr/ \t/ /s;
+
+    return $str;
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: replace_underscores
+#      PURPOSE: Replaces underscores in a string by spaces
+#   PARAMETERS: $str            The string to process
+#      RETURNS: The processed string
+#  DESCRIPTION:
+#       THROWS: No exceptions
+#     COMMENTS: None
+#     SEE ALSO: N/A
+#===============================================================================
+sub replace_underscores {
+    my ($str) = @_;
+
+    $str =~ s/_/ /g;
+
+    return $str;
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: remove_HTML
+#      PURPOSE: Clean a string of HTML tags
+#   PARAMETERS: $str            The string to process
+#      RETURNS: The processed string
+#  DESCRIPTION:
+#       THROWS: No exceptions
+#     COMMENTS: None
+#     SEE ALSO: N/A
+#===============================================================================
+sub remove_HTML {
+    my ($str) = @_;
+
+    my $hr        = HTML::Restrict->new();
+    my $processed = $hr->process($str);
+
+    return $processed;
+}
+
+#===  FUNCTION  ================================================================
+#         NAME: Options
+#      PURPOSE: Processes command-line options
+#   PARAMETERS: $optref     Hash reference to hold the options
+#               $filter     Hash reference to hold filter options
+#      RETURNS: Undef
+#  DESCRIPTION:
+#       THROWS: no exceptions
+#     COMMENTS: none
+#     SEE ALSO: n/a
+#===============================================================================
+sub Options {
+    my ( $optref, $filter ) = @_;
+
+    my @options = (
+        "help",    "album:s", "artist:s", "comment:s",
+        "genre:s", "title:s", "track:s",  "year:s",
+        "format!", "width=i", "edit=s",
+    );
+
+    #
+    # Implement '-filter=TAGNAME=FILTERNAME' (from the Getopt::Long manpage)
+    #
+    my %opthash
+        = ( "filter=s%" => sub { push( @{ $filter->{ $_[1] } }, $_[2] ) }, );
+
+    if ( !GetOptions( $optref, @options, %opthash ) ) {
+        pod2usage( -msg => "Version $VERSION\n", -exitval => 1 );
+    }
+
+    return;
+}
+
+__END__
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+#  Application Documentation
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+#{{{
+
+=head1 NAME
+
+fix_tags - manipulate ID3 tags
+
+=head1 VERSION
+
+This documentation refers to I<fix_tags> version 1.3.7
+
+=head1 USAGE
+
+ fix_tags [ -help ] [-album=ALBUMSTRING] [-artist=ARTISTSTRING]
+    [-comment=COMMENTSTRING] [-genre=GENRESTRING] [-title=TITLESTRING]
+    [-track=TRACKNUMBER] [-year=YEAR] [-filter TAGNAME=FILTERNAME]
+    [-[no]format] [-width=N] [-edit=TAGNAME] audio_file ...
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-help>
+
+Prints a brief help message describing the usage of the program, and then exits.
+
+=item B<-album=ALBUMSTRING>
+
+Sets the album tag to the string defined by the option. Use B<-album=> to
+clear the tag.
+
+=item B<-artist=ARTISTSTRING>
+
+Sets the artist tag to the string defined by the option. Use B<-artist=> to
+clear the tag.
+
+=item B<-comment=COMMENTSTRING>
+
+Sets the comment tag to the string defined by the option. Use B<-comment=> to
+clear the tag.
+
+=item B<-genre=GENRESTRING>
+
+Sets the genre tag to the string defined by the option. Use B<-genre=> to
+clear the tag.
+
+=item B<-title=TITLESTRING>
+
+Sets the title tag to the string defined by the option. Use B<-title=> to
+clear the tag.
+
+=item B<-track=TRACKNUMBER>
+
+Sets the track tag to the number defined by the option. Use B<-track=> to
+set the tag to zero.
+
+=item B<-year=YEAR>
+
+Sets the year tag to the number defined by the option. Use B<-year=> to
+set the tag to zero.
+
+=item B<-[no]format>
+
+If this option is enabled long tag values are wrapped in the report. The width
+of the resulting lines is controlled by the B<-width=N> option. The default is
+not to wrap.
+
+=item B<-width=N>
+
+Ths option controls the formatting of tag values when the B<-format> option is
+chosen. If a tag value would exceed this width after displaying the tag name,
+then formatting is applied. The width specified cannot be less than 40. The
+default width is 80.
+
+=item B<-edit=TAGNAME>
+
+This option invokes an editor (Vim) to edit the nominated tag. The B<TAGNAME>
+must be spelled out in full; abbreviations are not allowed. Only a limited
+subset of tags can be edited since only the longer tags need to be processed
+in this way.
+
+=item B<-filter TAGNAME=FILTERNAME> or B<-filter=TAGNAME=FILTERNAME>
+
+This option provides an interface to the filtering capability of the script.
+Here B<TAGNAME> denotes the full name of one of the text tags (album, artist,
+comment, genre or title - not track or year), and B<FILTERNAME> is one of the
+built-in filters:
+
+=over 4
+
+=item B<clean>
+
+The tag string has leading and trailing spaces removed. Multiple internal
+spaces and tabs are replaced by a single space. CR/LF sequences are removed,
+as are all non-graphic characters.
+
+=item B<underscore>
+
+All underscores in the tag string are replaced by spaces. No space compression
+takes place.
+
+=item B<HTML>
+
+The tag string is fed through the I<HTML::Restrict> module and all HTML tags
+are removed.
+
+=back
+
+Neither the B<TAGNAME> nor the B<FILTERNAME> parts of the option may be
+abbreviated, but neither is case-sensitive.
+
+Multiple filters may be specified by repeating the complete option sequence.
+For example:
+
+ fix_tags -filter comment=clean -fil comment=underscore FILE
+
+The script processes the tags specified in the B<-filter> option in alphabetic
+order, and for a given tag it also processes the filters in alphabetic order.
+
+=back
+
+=head1 DESCRIPTION
+
+This script manipulates ID3 tags (or their equivalents) in FLAC, MP3, OGG, SPX
+and WAV files.
+
+=head1 DEPENDENCIES
+
+    Audio::TagLib
+    Data::Dumper
+    Date::Manip::Delta
+    Date::Manip::TZ
+    File::stat
+    Getopt::Long
+    HTML::Restrict
+    Pod::Usage
+    TryCatch
+
+
+=head1 BUGS AND LIMITATIONS
+
+There are no known bugs in this module.
+Please report problems to Dave Morriss (Dave.Morriss@gmail.com)
+Patches are welcome.
+
+=head1 AUTHOR
+
+Dave Morriss (Dave.Morriss@gmail.com) 2011, 2012, 2013, 2014, 2015
+
+=head1 LICENCE AND COPYRIGHT
+
+Copyright (c) Dave Morriss (Dave.Morriss@gmail.com). All rights reserved.
+
+This program is free software. You can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=cut
+
+#}}}
+
+# [zo to open fold, zc to close]
+
+# vim: syntax=perl:ts=8:sw=4:et:ai:tw=78:fo=tcrqn21:fdm=marker
