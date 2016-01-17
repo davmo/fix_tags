@@ -26,7 +26,9 @@ The script is intended to be self-documenting. Run:
 
 for basic help, or use `perldoc` in this way:
 
-    perldoc /path/to/fix_tags
+    perldoc -oman /path/to/fix_tags
+
+to obtain the full help in Man format.
 
 <!--
 vim: syntax=markdown:ts=8:sw=4:ai:et:tw=78:fo=tcqn:fdm=marker
