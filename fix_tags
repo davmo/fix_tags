@@ -21,7 +21,7 @@
 #               Dave Morriss
 #      VERSION: 1.3.8
 #      CREATED: 2011-12-12 22:00:34
-#     REVISION: 2016-09-15 12:54:07
+#     REVISION: 2016-10-25 23:01:14
 #
 #===============================================================================
 
@@ -583,13 +583,13 @@ sub textFormat {
 
 #===  FUNCTION  ================================================================
 #         NAME: interval
-#      PURPOSE: Convert a 'MM:SS' string into an acceptable PostgreSQL
-#               interval where the minutes portion may exceed 60.
-#   PARAMETERS:
-#      RETURNS: The interval string in the format 'HH:MM:SS'
-#  DESCRIPTION:
+#      PURPOSE: Convert a time in seconds to a valid 'HH:MM:SS' interval
+#   PARAMETERS: $time           the time to convert in seconds
+#      RETURNS: The interval string in the format 'HH:MM:SS' or undef
+#  DESCRIPTION: TODO
 #       THROWS: No exceptions
-#     COMMENTS: None
+#     COMMENTS: Adapted from a routine for generating valid PostgreSQL
+#               interval times. Probably could be simplified
 #     SEE ALSO:
 #===============================================================================
 sub interval {
@@ -804,7 +804,7 @@ This documentation refers to I<fix_tags> version 1.3.8
  fix_tags [ -help ] [-album=ALBUMSTRING] [-artist=ARTISTSTRING]
     [-comment=COMMENTSTRING] [-genre=GENRESTRING] [-title=TITLESTRING]
     [-track=TRACKNUMBER] [-year=YEAR] [-filter TAGNAME=FILTERNAME]
-    [-[no]format] [-width=N] [-edit=TAGNAME] audio_file ...
+    [-[no]format] [-width=N] [-edit=TAGNAME] [-[no]silent] audio_file ...
 
 =head1 OPTIONS
 
@@ -935,7 +935,10 @@ and WAV files.
 
 =head1 BUGS AND LIMITATIONS
 
-There are no known bugs in this module.
+The script can crash when processing very bizarre tag contents. Up to now this
+has been resolved by using another tag tool to rewrite the tag in error. There
+is as yet no real data about what has been going on.
+
 Please report problems to Dave Morriss (Dave.Morriss@gmail.com)
 Patches are welcome.
 
