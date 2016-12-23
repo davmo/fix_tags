@@ -32,7 +32,7 @@ The module can still be downloaded and installed thus:
 
     $ wget http://search.cpan.org/CPAN/authors/id/G/GL/GLEACH/Audio-TagLib-1.65.tar.gz
     $ tar -xvzf Audio-TagLib-1.65.tar.gz
-    $ $ cd Audio-TagLib-1.65/
+    $ cd Audio-TagLib-1.65/
     $ perl Makefile.PL
     $ make
     $ make test    # should get the result 'PASS'
