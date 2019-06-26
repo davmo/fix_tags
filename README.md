@@ -38,6 +38,13 @@ The module can still be downloaded and installed thus:
     $ make test    # should get the result 'PASS'
     $ sudo make install
 
+### Update 2019-06-26
+
+Created `fix_tags.bin`, which is a binary version of `fix_tags` which can run
+stand-alone. It is not a container, just the encapsulation of the Perl script
+as a binary. It's slow to start, but does actually work, and is a way of
+avoiding having to install and build all the components listed above.
+
 ### Documentation
 
 The script is intended to be self-documenting. Run:
