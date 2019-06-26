@@ -57,6 +57,13 @@ for basic help, or use `perldoc` in this way:
 
 to obtain the full help in Man format.
 
+To create a PDF version of the documentation:
+
+    pod2pdf /path/to/fix_tags --out=fix_tags.pdf
+
+Where `pod2pdf` comes from `App::pod2pdf`
+
+
 <!--
 vim: syntax=markdown:ts=8:sw=4:ai:et:tw=78:fo=tcqn:fdm=marker
 -->
