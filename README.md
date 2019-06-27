@@ -40,6 +40,9 @@ The module can still be downloaded and installed thus:
 
 ### Update 2019-06-26
 
+As of today (and for some time probably) `Audio::TagLib` is back in CPAN. The
+current version is 1.67.
+
 Created `fix_tags.bin`, which is a binary version of `fix_tags` which can run
 stand-alone. It is not a container, just the encapsulation of the Perl script
 as a binary. It's slow to start, but does actually work, and is a way of
