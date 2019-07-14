@@ -51,7 +51,7 @@ avoiding having to install and build all the components listed above.
 ### Update 2019-07-14
 
 I should have noted how I created `fix_tags.bin`. I used the module called
-`'pp\ -\ PAR Packager'` which is documented online at
+`'pp - PAR Packager'` which is documented online at
 https://metacpan.org/pod/pp. I used the `pp` command it provides to bundle
 everything into a single binary file with the command:
 
