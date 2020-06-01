@@ -14,14 +14,14 @@
 #
 #      OPTIONS: ---
 # REQUIREMENTS: ---
-#         BUGS: ---
+#         BUGS: TryCatch is failing in late May 2020. Changed to Try::Tiny
 #        NOTES: ---
 #       AUTHOR: Dave Morriss (djm), Dave.Morriss@gmail.com
 #      LICENCE: Copyright (c) year 2011, 2012, 2013, 2014, 2015, 2016,
 #               Dave Morriss
-#      VERSION: 1.3.8
+#      VERSION: 1.3.9
 #      CREATED: 2011-12-12 22:00:34
-#     REVISION: 2016-10-25 23:01:14
+#     REVISION: 2020-06-01 09:53:19
 #
 #===============================================================================
 
@@ -41,14 +41,15 @@ use Date::Manip::TZ;
 use Audio::TagLib;
 use Encode qw(encode_utf8);
 
-use TryCatch;
+#use TryCatch; # Broke in late May 2020 due to a problem with Devel::Declare
+use Try::Tiny;
 
 use HTML::Restrict;
 
 #
 # Version number (manually incremented)
 #
-our $VERSION = '1.3.8';
+our $VERSION = '1.3.9';
 
 #
 # Script name
@@ -797,7 +798,7 @@ fix_tags - manipulate ID3 tags
 
 =head1 VERSION
 
-This documentation refers to I<fix_tags> version 1.3.8
+This documentation refers to I<fix_tags> version 1.3.9
 
 =head1 USAGE
 
