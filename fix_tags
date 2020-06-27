@@ -235,7 +235,7 @@ foreach my $file (@files) {
     catch {
         warn "File $file apparently does not contain tags\n";
         next;
-    }
+    }; # Try::Tiny needs a semicolon here
 
     #
     # Try and fix any UTF-8 weirdness
